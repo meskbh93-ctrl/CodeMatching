@@ -4,6 +4,8 @@ import pg from 'pg';
 import Anthropic from '@anthropic-ai/sdk';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -14,11 +16,34 @@ const { Pool } = pg;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+const JWT_SECRET = process.env.JWT_SECRET || 'change-me-in-production-secret-key';
+
+// ─── Auth Middleware ──────────────────────────────────────────────────────────
+function requireAuth(req, res, next) {
+  const header = req.headers['authorization'];
+  if (!header) return res.status(401).json({ error: 'Unauthorized' });
+  const token = header.replace('Bearer ', '');
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+    next();
+  } catch {
+    res.status(401).json({ error: 'Invalid token' });
+  }
+}
+
 // ─── DB Init ────────────────────────────────────────────────────────────────
 async function initDB() {
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      email VARCHAR(255) UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
     CREATE TABLE IF NOT EXISTS search_logs (
       id SERIAL PRIMARY KEY,
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
       query TEXT NOT NULL,
       mandatory_count INT DEFAULT 0,
       unspsc_count INT DEFAULT 0,
@@ -57,12 +82,134 @@ async function initDB() {
       name_en TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS user_dictionary (
+      id SERIAL PRIMARY KEY,
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      word_ar TEXT NOT NULL,
+      word_en TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(user_id, word_ar)
+    );
+
+    CREATE TABLE IF NOT EXISTS result_feedback (
+      id SERIAL PRIMARY KEY,
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      query TEXT NOT NULL,
+      result_type VARCHAR(20) NOT NULL,
+      result_id TEXT NOT NULL,
+      confirmed BOOLEAN NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(user_id, query, result_type, result_id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_mandatory_etimad ON mandatory_products(etimad_code);
     CREATE INDEX IF NOT EXISTS idx_unspsc_code ON unspsc_codes(code);
     CREATE INDEX IF NOT EXISTS idx_hs_code ON hs_codes(code);
+    CREATE INDEX IF NOT EXISTS idx_feedback_user ON result_feedback(user_id, query);
+    CREATE INDEX IF NOT EXISTS idx_dict_user ON user_dictionary(user_id);
   `);
-  console.log('✅ DB initialized');
+  console.log('DB initialized');
 }
+
+// ─── Auth Routes ──────────────────────────────────────────────────────────────
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password || password.length < 6)
+      return res.status(400).json({ error: 'Email and password (min 6 chars) required' });
+    const hash = await bcrypt.hash(password, 10);
+    const result = await pool.query(
+      'INSERT INTO users(email, password_hash) VALUES($1, $2) RETURNING id, email, created_at',
+      [email.toLowerCase().trim(), hash]
+    );
+    const user = result.rows[0];
+    const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '30d' });
+    res.json({ user, token });
+  } catch (e) {
+    if (e.code === '23505') return res.status(400).json({ error: 'البريد الإلكتروني مستخدم مسبقاً' });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+    const result = await pool.query('SELECT * FROM users WHERE email=$1', [email.toLowerCase().trim()]);
+    const user = result.rows[0];
+    if (!user) return res.status(401).json({ error: 'البريد أو كلمة المرور غير صحيحة' });
+    const valid = await bcrypt.compare(password, user.password_hash);
+    if (!valid) return res.status(401).json({ error: 'البريد أو كلمة المرور غير صحيحة' });
+    const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '30d' });
+    res.json({ user: { id: user.id, email: user.email, created_at: user.created_at }, token });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/auth/me', requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT id, email, created_at FROM users WHERE id=$1', [req.user.id]);
+    res.json(result.rows[0] || null);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── User Dictionary Routes ───────────────────────────────────────────────────
+app.get('/api/dictionary', requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM user_dictionary WHERE user_id=$1 ORDER BY created_at DESC',
+      [req.user.id]
+    );
+    res.json(result.rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/dictionary', requireAuth, async (req, res) => {
+  try {
+    const { word_ar, word_en } = req.body;
+    if (!word_ar || !word_en) return res.status(400).json({ error: 'word_ar and word_en required' });
+    const result = await pool.query(
+      `INSERT INTO user_dictionary(user_id, word_ar, word_en)
+       VALUES($1, $2, $3)
+       ON CONFLICT(user_id, word_ar) DO UPDATE SET word_en=EXCLUDED.word_en
+       RETURNING *`,
+      [req.user.id, word_ar.trim(), word_en.trim()]
+    );
+    res.json(result.rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ─── Result Feedback (Self-Learning) ─────────────────────────────────────────
+app.post('/api/feedback', requireAuth, async (req, res) => {
+  try {
+    const { query, result_type, result_id, confirmed } = req.body;
+    if (!query || !result_type || result_id == null || confirmed == null)
+      return res.status(400).json({ error: 'Missing fields' });
+    await pool.query(
+      `INSERT INTO result_feedback(user_id, query, result_type, result_id, confirmed)
+       VALUES($1, $2, $3, $4, $5)
+       ON CONFLICT(user_id, query, result_type, result_id) DO UPDATE SET confirmed=EXCLUDED.confirmed`,
+      [req.user.id, query.trim().toLowerCase(), result_type, String(result_id), confirmed]
+    );
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/feedback/rejected', requireAuth, async (req, res) => {
+  try {
+    const { query } = req.query;
+    if (!query) return res.json([]);
+    const result = await pool.query(
+      `SELECT result_type, result_id FROM result_feedback
+       WHERE user_id=$1 AND query=$2 AND confirmed=false`,
+      [req.user.id, query.trim().toLowerCase()]
+    );
+    res.json(result.rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // ─── MandatoryProduct Routes ─────────────────────────────────────────────────
 app.get('/api/entities/MandatoryProduct/list', async (req, res) => {
@@ -128,28 +275,31 @@ app.post('/api/entities/HSCode/filter', async (req, res) => {
 });
 
 // ─── SearchLog Routes ─────────────────────────────────────────────────────────
-app.post('/api/entities/SearchLog/create', async (req, res) => {
+app.post('/api/entities/SearchLog/create', requireAuth, async (req, res) => {
   try {
     const { query, mandatory_count, unspsc_count, hs_count, lang } = req.body;
     const result = await pool.query(
-      `INSERT INTO search_logs(query,mandatory_count,unspsc_count,hs_count,lang) VALUES($1,$2,$3,$4,$5) RETURNING *`,
-      [query, mandatory_count||0, unspsc_count||0, hs_count||0, lang||'ar']
+      `INSERT INTO search_logs(user_id,query,mandatory_count,unspsc_count,hs_count,lang) VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [req.user.id, query, mandatory_count||0, unspsc_count||0, hs_count||0, lang||'ar']
     );
     res.json(result.rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/entities/SearchLog/list', async (req, res) => {
+app.get('/api/entities/SearchLog/list', requireAuth, async (req, res) => {
   try {
     const { limit = 20 } = req.query;
-    const result = await pool.query(`SELECT * FROM search_logs ORDER BY created_at DESC LIMIT $1`, [limit]);
+    const result = await pool.query(
+      `SELECT * FROM search_logs WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2`,
+      [req.user.id, limit]
+    );
     res.json(result.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/entities/SearchLog/:id', async (req, res) => {
+app.delete('/api/entities/SearchLog/:id', requireAuth, async (req, res) => {
   try {
-    await pool.query(`DELETE FROM search_logs WHERE id=$1`, [req.params.id]);
+    await pool.query(`DELETE FROM search_logs WHERE id=$1 AND user_id=$2`, [req.params.id, req.user.id]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -172,18 +322,15 @@ app.post('/api/translate', async (req, res) => {
   try {
     const { query } = req.body;
     if (!query || query.trim().length < 2) return res.json({ original: query, translated: '' });
-
     const isArabic = /[\u0600-\u06FF]/.test(query);
     const prompt = isArabic
       ? `Translate this Arabic product/item term to English. Return ONLY the English translation, no explanation, no punctuation, just the translated word(s): "${query}"`
       : `ترجم هذا المصطلح/المنتج من الإنجليزية إلى العربية. أرجع الترجمة العربية فقط بدون أي شرح أو علامات ترقيم: "${query}"`;
-
     const message = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 100,
       messages: [{ role: 'user', content: prompt }],
     });
-
     res.json({ original: query.trim(), translated: message.content[0].text.trim() });
   } catch (e) {
     res.json({ original: req.body.query, translated: '' });
@@ -197,7 +344,6 @@ app.post('/api/import/:entity', async (req, res) => {
   const { entity } = req.params;
   const { records } = req.body;
   if (!records || !Array.isArray(records)) return res.status(400).json({ error: 'records array required' });
-
   try {
     let inserted = 0;
     for (const r of records) {
@@ -223,7 +369,7 @@ app.post('/api/import/:entity', async (req, res) => {
 // ─── Health ────────────────────────────────────────────────────────────────────
 app.get('/api/health', (_, res) => res.json({ ok: true }));
 
-// ─── Serve frontend (production) ───────────────────────────────────────────────
+// ─── Serve frontend ────────────────────────────────────────────────────────────
 const distPath = path.join(__dirname, '../dist');
 app.use(express.static(distPath));
 app.get('*', (_, res) => res.sendFile(path.join(distPath, 'index.html')));
@@ -241,5 +387,5 @@ function extractTerms(orArray) {
 // ─── Start ─────────────────────────────────────────────────────────────────────
 initDB().then(() => {
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server on port ${PORT}`));
+  app.listen(PORT, '0.0.0.0', () => console.log(`Server on port ${PORT}`));
 });
