@@ -11,6 +11,102 @@ import SmartComparison from "@/components/search/SmartComparison";
 import ExportButton from "@/components/search/ExportButton";
 import SearchHistory from "@/components/search/SearchHistory";
 
+// ─── قاموس الترجمة (بدون API) ─────────────────────────────────────────────
+const AR_TO_EN = {
+  // حيوانات
+  "قطط": "cats", "قط": "cats", "كلاب": "dogs", "كلب": "dogs",
+  "خيول": "horses", "حصان": "horses", "أغنام": "sheep", "غنم": "sheep",
+  "ماعز": "goats", "خنازير": "swine", "أرانب": "rabbits",
+  "أبقار": "cattle", "بقر": "cattle", "طيور": "birds",
+  "دجاج": "chicken", "بط": "ducks", "ديك رومي": "turkeys",
+  "أوز": "geese", "سمك": "fish", "سلمون": "salmon",
+  "روبيان": "shrimp", "جمبري": "shrimp", "نحل": "bees",
+  "حشرات": "insects", "دود حرير": "silkworms",
+  // غذاء وزراعة
+  "تفاح": "apples", "قمح": "wheat", "أرز": "rice", "شعير": "barley",
+  "ذرة": "corn", "بطاطا": "potato", "طماطم": "tomatoes",
+  "بصل": "onion", "ثوم": "garlic", "زيت": "oil", "سكر": "sugar",
+  "ملح": "salt", "دقيق": "flour", "خبز": "bread", "لحم": "meat",
+  "لحوم": "meat", "دواجن": "poultry", "ألبان": "dairy",
+  "حليب": "milk", "جبن": "cheese", "زبدة": "butter",
+  "بيض": "eggs", "عسل": "honey", "تمر": "dates", "قهوة": "coffee",
+  "شاي": "tea", "مياه": "water", "عصير": "juice", "بذور": "seeds",
+  "شتلات": "seedlings", "علف": "feed", "أعلاف": "feed",
+  // بناء ومواد
+  "حديد": "steel", "صلب": "steel", "خرسانة": "concrete",
+  "اسمنت": "cement", "رمل": "sand", "حجارة": "stones",
+  "خشب": "wood", "ألومنيوم": "aluminum", "نحاس": "copper",
+  "بلاستيك": "plastic", "زجاج": "glass", "طوب": "bricks",
+  "دهان": "paint", "أنابيب": "pipes", "أسلاك": "wires",
+  "كابلات": "cables", "مسامير": "nails", "براغي": "screws",
+  "أدوات": "tools", "معدات": "equipment", "آلات": "machines",
+  "مضخات": "pumps", "مولدات": "generators", "محركات": "motors",
+  "رافعة": "crane", "جرار": "tractor",
+  // طبية وصحية
+  "أدوية": "medical", "دواء": "drugs", "جراحي": "surgical",
+  "مختبر": "laboratory", "تشخيص": "diagnostic", "أسنان": "dental",
+  "قلب": "cardiac", "أشعة": "radiology", "تخدير": "anesthesia",
+  "ضغط": "pressure", "قسطرة": "catheter", "خياطة": "sutures",
+  "قفازات": "gloves", "أقنعة": "masks", "محاقن": "syringes",
+  "أسرة": "beds", "كراسي متحركة": "wheelchairs",
+  // تقنية
+  "حاسوب": "computer", "حاسبات": "computers", "كمبيوتر": "computer",
+  "طابعة": "printer", "طابعات": "printers", "شبكة": "network",
+  "برمجيات": "software", "برنامج": "software", "اتصالات": "communications",
+  "هاتف": "phone", "جوال": "mobile", "لابتوب": "laptop",
+  "شاشة": "monitor", "خادم": "server", "تخزين": "storage",
+  "بيانات": "data", "أمن": "security", "كاميرا": "camera",
+  // مركبات
+  "سيارات": "vehicles", "سيارة": "vehicle", "شاحنة": "truck",
+  "شاحنات": "trucks", "حافلة": "bus", "طائرة": "aircraft",
+  "سفينة": "ship", "قارب": "boat", "دراجة": "bicycle",
+  // خدمات
+  "خدمات": "services", "صيانة": "maintenance", "تدريب": "training",
+  "استشارات": "consulting", "نظافة": "cleaning", "حراسة": "security",
+  "نقل": "transport", "شحن": "shipping", "تأمين": "insurance",
+  "محاسبة": "accounting", "تدقيق": "audit", "هندسة": "engineering",
+  "تصميم": "design", "إنشاء": "construction", "تشييد": "construction",
+  // كهربائية
+  "كهربائي": "electrical", "محولات": "transformers",
+  "مصابيح": "lighting", "إضاءة": "lighting", "طاقة": "power",
+  "بطارية": "battery", "شمسي": "solar", "لوحات": "panels",
+  // مكتبية
+  "قرطاسية": "stationery", "ورق": "paper", "أثاث": "furniture",
+  "مكاتب": "desks", "كراسي": "chairs", "خزائن": "cabinets",
+  "طباعة": "printing",
+  // بيئة وسلامة
+  "سلامة": "safety", "حريق": "fire", "إطفاء": "fire",
+  "وقاية": "protection", "طوارئ": "emergency", "نفايات": "waste",
+  // كيماويات ووقود
+  "كيماويات": "chemicals", "وقود": "fuel", "بنزين": "gasoline",
+  "ديزل": "diesel", "غاز": "gas", "زيوت": "oils",
+  "مواد خام": "raw materials", "أحماض": "acid",
+};
+
+// عكس القاموس: إنجليزي → عربي
+const EN_TO_AR = {};
+for (const [ar, en] of Object.entries(AR_TO_EN)) {
+  if (!EN_TO_AR[en]) EN_TO_AR[en] = ar;
+}
+
+function localTranslate(query) {
+  const q = query.trim().toLowerCase();
+  const isArabic = /[\u0600-\u06FF]/.test(q);
+  if (isArabic) {
+    if (AR_TO_EN[q]) return AR_TO_EN[q];
+    for (const [ar, en] of Object.entries(AR_TO_EN)) {
+      if (q.includes(ar) || ar.includes(q)) return en;
+    }
+  } else {
+    if (EN_TO_AR[q]) return EN_TO_AR[q];
+    for (const [en, ar] of Object.entries(EN_TO_AR)) {
+      if (q.includes(en) || en.includes(q)) return ar;
+    }
+  }
+  return "";
+}
+// ──────────────────────────────────────────────────────────────────────────────
+
 const translations = {
   ar: {
     title: "بحث رمز المنتج",
@@ -107,21 +203,10 @@ export default function SearchPage() {
     try {
       const q = query.trim().toLowerCase();
 
-      // ترجمة الكلمة للغة الأخرى قبل البحث
-      let translatedQ = "";
-      try {
-        const transRes = await fetch("/api/translate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: q }),
-        });
-        const transData = await transRes.json();
-        translatedQ = (transData.translated || "").toLowerCase().trim();
-      } catch (_) {
-        // إذا فشلت الترجمة نكمل بالكلمة الأصلية فقط
-      }
+      // ترجمة محلية بدون API
+      const translatedQ = localTranslate(q);
 
-      // بناء شروط البحث بالكلمتين (الأصلية والمترجمة)
+      // بناء شروط البحث بالكلمتين
       const buildOr = (fields) => {
         const terms = [q, translatedQ].filter(Boolean);
         return fields.flatMap((field) =>
@@ -240,7 +325,6 @@ export default function SearchPage() {
       className={`min-h-screen transition-colors duration-300 ${darkMode ? "bg-gray-950" : "bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50"}`}
       dir={isRTL ? "rtl" : "ltr"}
     >
-      {/* Header */}
       <header className={`sticky top-0 z-50 backdrop-blur-md border-b transition-colors ${darkMode ? "bg-gray-900/90 border-gray-800" : "bg-white/80 border-slate-200"}`}>
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -266,13 +350,11 @@ export default function SearchPage() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8">
-        {/* Hero */}
         <div className="text-center mb-8">
           <h1 className={`text-3xl md:text-4xl font-bold mb-3 ${darkMode ? "text-white" : "text-slate-800"}`}>{t.title}</h1>
           <p className={`text-base max-w-2xl mx-auto ${darkMode ? "text-gray-400" : "text-slate-500"}`}>{t.subtitle}</p>
         </div>
 
-        {/* Search Box */}
         <div className={`rounded-2xl p-4 md:p-5 mb-6 shadow-lg ${darkMode ? "bg-gray-900 border border-gray-800" : "bg-white border border-slate-200"}`}>
           <div className="flex gap-3">
             <div className="relative flex-1">
@@ -328,14 +410,9 @@ export default function SearchPage() {
           <div className={`flex gap-6 ${isRTL ? "flex-row-reverse" : ""}`}>
             {showFilters && (
               <FilterSidebar
-                darkMode={darkMode}
-                t={t}
-                lang={lang}
-                sectors={allSectors}
-                selectedSector={selectedSector}
-                onSectorChange={setSelectedSector}
-                codeFilter={codeFilter}
-                onCodeFilterChange={setCodeFilter}
+                darkMode={darkMode} t={t} lang={lang} sectors={allSectors}
+                selectedSector={selectedSector} onSectorChange={setSelectedSector}
+                codeFilter={codeFilter} onCodeFilterChange={setCodeFilter}
                 onClear={() => { setSelectedSector(""); setCodeFilter(""); }}
                 hasActiveFilters={hasActiveFilters}
               />
@@ -343,34 +420,23 @@ export default function SearchPage() {
 
             <div className="flex-1 min-w-0 space-y-10">
               <div className="flex flex-col gap-4">
-                <SmartComparison
-                  query={query} mandatoryResults={mandatoryResults}
-                  unspscResults={unspscResults} hsResults={hsResults}
-                  darkMode={darkMode} lang={lang}
-                />
-                <div className={`flex justify-end`}>
-                  <ExportButton
-                    query={query} mandatoryResults={mandatoryResults}
-                    unspscResults={unspscResults} hsResults={hsResults}
-                    darkMode={darkMode} lang={lang}
-                  />
+                <SmartComparison query={query} mandatoryResults={mandatoryResults}
+                  unspscResults={unspscResults} hsResults={hsResults} darkMode={darkMode} lang={lang} />
+                <div className="flex justify-end">
+                  <ExportButton query={query} mandatoryResults={mandatoryResults}
+                    unspscResults={unspscResults} hsResults={hsResults} darkMode={darkMode} lang={lang} />
                 </div>
               </div>
 
-              {/* Mandatory Results */}
               <section>
                 <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-                  <h2 className={`text-xl font-bold ${darkMode ? "text-white" : "text-slate-800"}`}>
-                    🇸🇦 {t.mandatory}
-                  </h2>
+                  <h2 className={`text-xl font-bold ${darkMode ? "text-white" : "text-slate-800"}`}>🇸🇦 {t.mandatory}</h2>
                   <span className={`text-sm font-medium px-3 py-1 rounded-full ${darkMode ? "bg-blue-900/50 text-blue-300" : "bg-blue-100 text-blue-700"}`}>
                     {mandatoryResults.length} {t.mandatoryCount}
                   </span>
                 </div>
                 {mandatoryResults.length === 0 ? (
-                  <div className={`text-center py-10 rounded-xl ${darkMode ? "bg-gray-900 text-gray-500" : "bg-white text-slate-400"}`}>
-                    {t.noResults}
-                  </div>
+                  <div className={`text-center py-10 rounded-xl ${darkMode ? "bg-gray-900 text-gray-500" : "bg-white text-slate-400"}`}>{t.noResults}</div>
                 ) : (
                   <div className="grid gap-4 md:grid-cols-2">
                     {mandatoryResults.slice(0, 60).map((p, idx) => (
@@ -380,20 +446,15 @@ export default function SearchPage() {
                 )}
               </section>
 
-              {/* UNSPSC Results */}
               <section>
                 <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-                  <h2 className={`text-xl font-bold ${darkMode ? "text-white" : "text-slate-800"}`}>
-                    🌐 {t.unspsc}
-                  </h2>
+                  <h2 className={`text-xl font-bold ${darkMode ? "text-white" : "text-slate-800"}`}>🌐 {t.unspsc}</h2>
                   <span className={`text-sm font-medium px-3 py-1 rounded-full ${darkMode ? "bg-emerald-900/50 text-emerald-300" : "bg-emerald-100 text-emerald-700"}`}>
                     {unspscResults.length} {t.unspscCount}
                   </span>
                 </div>
                 {unspscResults.length === 0 ? (
-                  <div className={`text-center py-10 rounded-xl ${darkMode ? "bg-gray-900 text-gray-500" : "bg-white text-slate-400"}`}>
-                    {t.noResults}
-                  </div>
+                  <div className={`text-center py-10 rounded-xl ${darkMode ? "bg-gray-900 text-gray-500" : "bg-white text-slate-400"}`}>{t.noResults}</div>
                 ) : (
                   <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                     {unspscResults.map((u, idx) => (
@@ -403,20 +464,15 @@ export default function SearchPage() {
                 )}
               </section>
 
-              {/* HS Code Results */}
               <section>
                 <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-                  <h2 className={`text-xl font-bold ${darkMode ? "text-white" : "text-slate-800"}`}>
-                    🛃 {t.hsCode}
-                  </h2>
+                  <h2 className={`text-xl font-bold ${darkMode ? "text-white" : "text-slate-800"}`}>🛃 {t.hsCode}</h2>
                   <span className={`text-sm font-medium px-3 py-1 rounded-full ${darkMode ? "bg-amber-900/50 text-amber-300" : "bg-amber-100 text-amber-700"}`}>
                     {hsResults.length} {t.hsCount}
                   </span>
                 </div>
                 {hsResults.length === 0 ? (
-                  <div className={`text-center py-10 rounded-xl ${darkMode ? "bg-gray-900 text-gray-500" : "bg-white text-slate-400"}`}>
-                    {t.noResults}
-                  </div>
+                  <div className={`text-center py-10 rounded-xl ${darkMode ? "bg-gray-900 text-gray-500" : "bg-white text-slate-400"}`}>{t.noResults}</div>
                 ) : (
                   <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                     {hsResults.map((h, idx) => (
