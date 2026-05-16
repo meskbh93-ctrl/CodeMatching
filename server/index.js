@@ -1,250 +1,245 @@
-import { useState, useCallback, useEffect } from "react";
-import { base44 } from "@/api/base44Client";
-import { Search, Moon, Sun, Globe, Loader2, SlidersHorizontal, X, History } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import MandatoryResultCard from "@/components/search/MandatoryResultCard";
-import UNSPSCResultCard from "@/components/search/UNSPSCResultCard";
-import FilterSidebar from "@/components/search/FilterSidebar";
-import HSCodeResultCard from "@/components/search/HSCodeResultCard";
-import SmartComparison from "@/components/search/SmartComparison";
-import ExportButton from "@/components/search/ExportButton";
-import SearchHistory from "@/components/search/SearchHistory";
+import express from 'express';
+import cors from 'cors';
+import pg from 'pg';
+import Anthropic from '@anthropic-ai/sdk';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-const translations = {
-  ar: {
-    title: "بحث رمز المنتج",
-    subtitle: "ابحث عن أي منتج للحصول على رمزه من القائمة الإلزامية للمنتجات الوطنية وتصنيف UNSPSC",
-    placeholder: "أدخل اسم المنتج أو وصفه بالعربية أو الإنجليزية...",
-    searchBtn: "بحث",
-    mandatory: "القائمة الإلزامية للمنتجات الوطنية",
-    unspsc: "تصنيف UNSPSC",
-    noResults: "لا توجد نتائج",
-    etimadCode: "رمز اعتماد",
-    segment: "القطاع",
-    description: "الوصف",
-    effectiveDate: "تاريخ التطبيق",
-    code: "الرمز",
-    searching: "جارٍ البحث...",
-    searchHint: "اكتب على الأقل حرفين للبحث",
-    mandatoryCount: "نتيجة من القائمة الإلزامية",
-    unspscCount: "نتيجة من UNSPSC",
-    hsCode: "رموز النظام المنسق HS",
-    hsCount: "نتيجة من رموز HS",
-    filters: "الفلاتر",
-    filterBySector: "فلترة حسب القطاع",
-    filterByCode: "فلترة حسب رمز اعتماد",
-    allSectors: "جميع القطاعات",
-    codeSearch: "ابحث برمز اعتماد...",
-    clearFilters: "مسح الفلاتر",
-    showFilters: "إظهار الفلاتر",
-  },
-  en: {
-    title: "Product Code Search",
-    subtitle: "Search for any product to find its code from the National Mandatory Products List and UNSPSC classification",
-    placeholder: "Enter product name or description in Arabic or English...",
-    searchBtn: "Search",
-    mandatory: "National Mandatory Products List",
-    unspsc: "UNSPSC Classification",
-    noResults: "No results found",
-    etimadCode: "Etimad Code",
-    segment: "Segment",
-    description: "Description",
-    effectiveDate: "Effective Date",
-    code: "Code",
-    searching: "Searching...",
-    searchHint: "Type at least 2 characters to search",
-    mandatoryCount: "results from Mandatory List",
-    unspscCount: "results from UNSPSC",
-    hsCode: "HS Harmonized System Codes",
-    hsCount: "results from HS Codes",
-    filters: "Filters",
-    filterBySector: "Filter by Sector",
-    filterByCode: "Filter by Etimad Code",
-    allSectors: "All Sectors",
-    codeSearch: "Search by Etimad code...",
-    clearFilters: "Clear Filters",
-    showFilters: "Show Filters",
-  },
-};
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: '50mb' }));
 
-export default function SearchPage() {
-  const [query, setQuery] = useState("");
-  const [lang, setLang] = useState("ar");
-  const [darkMode, setDarkMode] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [mandatoryResults, setMandatoryResults] = useState([]);
-  const [unspscResults, setUnspscResults] = useState([]);
-  const [hsResults, setHsResults] = useState([]);
-  const [searched, setSearched] = useState(false);
-  const [showFilters, setShowFilters] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
+const { Pool } = pg;
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-  const [selectedSector, setSelectedSector] = useState("");
-  const [codeFilter, setCodeFilter] = useState("");
-  const [allSectors, setAllSectors] = useState([]);
-  const [rawMandatory, setRawMandatory] = useState([]);
+// ─── DB Init ────────────────────────────────────────────────────────────────
+async function initDB() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS search_logs (
+      id SERIAL PRIMARY KEY,
+      query TEXT NOT NULL,
+      mandatory_count INT DEFAULT 0,
+      unspsc_count INT DEFAULT 0,
+      hs_count INT DEFAULT 0,
+      lang VARCHAR(5) DEFAULT 'ar',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
 
-  const t = translations[lang];
-  const isRTL = lang === "ar";
+    CREATE TABLE IF NOT EXISTS mandatory_products (
+      id SERIAL PRIMARY KEY,
+      segment_no TEXT,
+      segment_title_ar TEXT,
+      segment_title_en TEXT,
+      etimad_code TEXT,
+      product_name_ar TEXT,
+      product_name_en TEXT,
+      product_desc_ar TEXT,
+      product_desc_en TEXT,
+      effective_date TEXT,
+      sector TEXT,
+      notes TEXT
+    );
 
-  useEffect(() => {
-    base44.entities.MandatoryProduct.list("segment_title_ar", 5000).then((all) => {
-      const sectors = [...new Set(
-        all.map((p) => p.segment_title_ar || p.segment_title_en || p.sector || "").filter(Boolean)
-      )].sort();
-      setAllSectors(sectors);
+    CREATE TABLE IF NOT EXISTS unspsc_codes (
+      id SERIAL PRIMARY KEY,
+      key BIGINT,
+      parent_key BIGINT,
+      code TEXT,
+      title TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS hs_codes (
+      id SERIAL PRIMARY KEY,
+      code TEXT,
+      name_ar TEXT,
+      name_en TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_mandatory_etimad ON mandatory_products(etimad_code);
+    CREATE INDEX IF NOT EXISTS idx_unspsc_code ON unspsc_codes(code);
+    CREATE INDEX IF NOT EXISTS idx_hs_code ON hs_codes(code);
+  `);
+  console.log('✅ DB initialized');
+}
+
+// ─── MandatoryProduct Routes ─────────────────────────────────────────────────
+app.get('/api/entities/MandatoryProduct/list', async (req, res) => {
+  try {
+    const { sort = 'id', limit = 5000 } = req.query;
+    const col = sort.startsWith('-') ? sort.slice(1) : sort;
+    const dir = sort.startsWith('-') ? 'DESC' : 'ASC';
+    const safe = ['id','segment_title_ar','segment_title_en','etimad_code','product_name_ar'].includes(col) ? col : 'id';
+    const result = await pool.query(`SELECT * FROM mandatory_products ORDER BY ${safe} ${dir} LIMIT $1`, [limit]);
+    res.json(result.rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/entities/MandatoryProduct/filter', async (req, res) => {
+  try {
+    const { filter = {}, limit = 500 } = req.body;
+    const terms = filter.$or ? extractTerms(filter.$or) : [];
+    if (!terms.length) return res.json([]);
+    const conditions = terms.map((_, i) =>
+      `(product_name_ar ILIKE $${i+1} OR product_name_en ILIKE $${i+1}
+       OR product_desc_ar ILIKE $${i+1} OR product_desc_en ILIKE $${i+1}
+       OR segment_title_ar ILIKE $${i+1} OR segment_title_en ILIKE $${i+1}
+       OR etimad_code ILIKE $${i+1})`
+    ).join(' OR ');
+    const result = await pool.query(
+      `SELECT * FROM mandatory_products WHERE ${conditions} LIMIT $${terms.length + 1}`,
+      [...terms.map(t => `%${t}%`), limit]
+    );
+    res.json(result.rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ─── UNSPSCCode Routes ────────────────────────────────────────────────────────
+app.post('/api/entities/UNSPSCCode/filter', async (req, res) => {
+  try {
+    const { filter = {}, limit = 100 } = req.body;
+    const terms = filter.$or
+      ? filter.$or.map(c => c.title?.$regex).filter(Boolean)
+      : [filter.title?.$regex].filter(Boolean);
+    if (!terms.length) return res.json([]);
+    const conditions = terms.map((_, i) => `title ILIKE $${i+1}`).join(' OR ');
+    const result = await pool.query(
+      `SELECT * FROM unspsc_codes WHERE ${conditions} LIMIT $${terms.length + 1}`,
+      [...terms.map(t => `%${t}%`), limit]
+    );
+    res.json(result.rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ─── HSCode Routes ────────────────────────────────────────────────────────────
+app.post('/api/entities/HSCode/filter', async (req, res) => {
+  try {
+    const { filter = {}, limit = 100 } = req.body;
+    const terms = filter.$or ? extractTerms(filter.$or) : [];
+    if (!terms.length) return res.json([]);
+    const conditions = terms.map((_, i) => `(name_ar ILIKE $${i+1} OR name_en ILIKE $${i+1})`).join(' OR ');
+    const result = await pool.query(
+      `SELECT * FROM hs_codes WHERE ${conditions} LIMIT $${terms.length + 1}`,
+      [...terms.map(t => `%${t}%`), limit]
+    );
+    res.json(result.rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ─── SearchLog Routes ─────────────────────────────────────────────────────────
+app.post('/api/entities/SearchLog/create', async (req, res) => {
+  try {
+    const { query, mandatory_count, unspsc_count, hs_count, lang } = req.body;
+    const result = await pool.query(
+      `INSERT INTO search_logs(query,mandatory_count,unspsc_count,hs_count,lang) VALUES($1,$2,$3,$4,$5) RETURNING *`,
+      [query, mandatory_count||0, unspsc_count||0, hs_count||0, lang||'ar']
+    );
+    res.json(result.rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/entities/SearchLog/list', async (req, res) => {
+  try {
+    const { limit = 20 } = req.query;
+    const result = await pool.query(`SELECT * FROM search_logs ORDER BY created_at DESC LIMIT $1`, [limit]);
+    res.json(result.rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/entities/SearchLog/:id', async (req, res) => {
+  try {
+    await pool.query(`DELETE FROM search_logs WHERE id=$1`, [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ─── AI / LLM Route ───────────────────────────────────────────────────────────
+app.post('/api/integrations/llm', async (req, res) => {
+  try {
+    const { prompt } = req.body;
+    const message = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: prompt }],
     });
-  }, []);
+    res.json({ result: message.content[0].text });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
-  const handleSearch = useCallback(async () => {
-    if (!query.trim() || query.trim().length < 2) return;
-    setLoading(true);
-    setSearched(true);
-    setSelectedSector("");
-    setCodeFilter("");
+// ─── Translation Route ────────────────────────────────────────────────────────
+app.post('/api/translate', async (req, res) => {
+  try {
+    const { query } = req.body;
+    if (!query || query.trim().length < 2) return res.json({ original: query, translated: '' });
 
-    try {
-      const q = query.trim().toLowerCase();
+    const isArabic = /[\u0600-\u06FF]/.test(query);
+    const prompt = isArabic
+      ? `Translate this Arabic product/item term to English. Return ONLY the English translation, no explanation, no punctuation, just the translated word(s): "${query}"`
+      : `ترجم هذا المصطلح/المنتج من الإنجليزية إلى العربية. أرجع الترجمة العربية فقط بدون أي شرح أو علامات ترقيم: "${query}"`;
 
-      // ترجمة الكلمة للغة الأخرى قبل البحث
-      let translatedQ = "";
-      try {
-        const transRes = await fetch("/api/translate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: q }),
-        });
-        const transData = await transRes.json();
-        translatedQ = (transData.translated || "").toLowerCase().trim();
-      } catch (_) {
-        // إذا فشلت الترجمة نكمل بالكلمة الأصلية فقط
-      }
+    const message = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 100,
+      messages: [{ role: 'user', content: prompt }],
+    });
 
-      // بناء شروط البحث بالكلمتين (الأصلية والمترجمة)
-      const buildOr = (fields) => {
-        const terms = [q, translatedQ].filter(Boolean);
-        return fields.flatMap((field) =>
-          terms.map((term) => ({ [field]: { $regex: term, $options: "i" } }))
+    res.json({ original: query.trim(), translated: message.content[0].text.trim() });
+  } catch (e) {
+    res.json({ original: req.body.query, translated: '' });
+  }
+});
+
+// ─── Data Import Route ────────────────────────────────────────────────────────
+app.post('/api/import/:entity', async (req, res) => {
+  const secret = req.headers['x-import-secret'];
+  if (secret !== process.env.IMPORT_SECRET) return res.status(401).json({ error: 'Unauthorized' });
+  const { entity } = req.params;
+  const { records } = req.body;
+  if (!records || !Array.isArray(records)) return res.status(400).json({ error: 'records array required' });
+
+  try {
+    let inserted = 0;
+    for (const r of records) {
+      if (entity === 'mandatory_products') {
+        await pool.query(
+          `INSERT INTO mandatory_products(segment_no,segment_title_ar,segment_title_en,etimad_code,product_name_ar,product_name_en,product_desc_ar,product_desc_en,effective_date,sector,notes)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          [r.segment_no,r.segment_title_ar,r.segment_title_en,r.etimad_code,r.product_name_ar,r.product_name_en,r.product_desc_ar,r.product_desc_en,r.effective_date,r.sector,r.notes]
         );
-      };
-
-      const [allMandatory, unspscFiltered, hsFiltered] = await Promise.all([
-        base44.entities.MandatoryProduct.filter(
-          {
-            $or: buildOr([
-              "product_name_ar", "product_name_en",
-              "product_desc_ar", "product_desc_en",
-              "segment_title_ar", "segment_title_en",
-              "etimad_code",
-            ]),
-          },
-          "etimad_code",
-          500
-        ),
-        base44.entities.UNSPSCCode.filter(
-          translatedQ
-            ? { $or: [{ title: { $regex: q, $options: "i" } }, { title: { $regex: translatedQ, $options: "i" } }] }
-            : { title: { $regex: q, $options: "i" } },
-          "title",
-          100
-        ),
-        base44.entities.HSCode.filter(
-          { $or: buildOr(["name_ar", "name_en"]) },
-          "code",
-          100
-        ),
-      ]);
-
-      const scoreMandatory = (p) => {
-        const nameAr = (p.product_name_ar || "").toLowerCase();
-        const nameEn = (p.product_name_en || "").toLowerCase();
-        const terms = [q, translatedQ].filter(Boolean);
-        for (const term of terms) {
-          if (nameAr === term || nameEn === term) return 3;
-          if (nameAr.startsWith(term) || nameEn.startsWith(term)) return 2;
-          if (nameAr.includes(term) || nameEn.includes(term)) return 1;
-        }
-        return 0;
-      };
-
-      const mandatoryWithScore = allMandatory.map((p) => ({ ...p, _score: scoreMandatory(p) }));
-      mandatoryWithScore.sort((a, b) => b._score - a._score);
-
-      const seen = new Set();
-      const uniqueMandatory = mandatoryWithScore.filter((p) => {
-        const key = p.etimad_code || p.id;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-
-      setRawMandatory(uniqueMandatory);
-      setMandatoryResults(uniqueMandatory);
-
-      const seenCodes = new Set();
-      const uniqueUnspsc = unspscFiltered.filter((u) => {
-        if (seenCodes.has(u.code)) return false;
-        seenCodes.add(u.code);
-        return true;
-      });
-
-      const seenHs = new Set();
-      const uniqueHs = hsFiltered.filter((h) => {
-        if (seenHs.has(h.code)) return false;
-        seenHs.add(h.code);
-        return true;
-      });
-
-      setUnspscResults(uniqueUnspsc);
-      setHsResults(uniqueHs);
-      setShowHistory(false);
-
-      base44.entities.SearchLog.create({
-        query: query.trim(),
-        mandatory_count: uniqueMandatory.length,
-        unspsc_count: uniqueUnspsc.length,
-        hs_count: uniqueHs.length,
-        lang,
-      });
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
+      } else if (entity === 'unspsc_codes') {
+        await pool.query(`INSERT INTO unspsc_codes(key,parent_key,code,title) VALUES($1,$2,$3,$4)`,
+          [r.key,r.parent_key,r.code,r.title]);
+      } else if (entity === 'hs_codes') {
+        await pool.query(`INSERT INTO hs_codes(code,name_ar,name_en) VALUES($1,$2,$3)`,
+          [r.code,r.name_ar,r.name_en]);
+      }
+      inserted++;
     }
-  }, [query]);
+    res.json({ inserted });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
-  useEffect(() => {
-    let filtered = rawMandatory;
-    if (selectedSector) {
-      filtered = filtered.filter(
-        (p) => (p.segment_title_ar || p.segment_title_en || p.sector || "") === selectedSector
-      );
-    }
-    if (codeFilter.trim()) {
-      filtered = filtered.filter(
-        (p) => p.etimad_code && String(p.etimad_code).toLowerCase().includes(codeFilter.trim().toLowerCase())
-      );
-    }
-    setMandatoryResults(filtered);
-  }, [selectedSector, codeFilter, rawMandatory]);
+// ─── Health ────────────────────────────────────────────────────────────────────
+app.get('/api/health', (_, res) => res.json({ ok: true }));
 
-  const handleKeyDown = (e) => {
-    if (e.key === "Enter") handleSearch();
-  };
+// ─── Serve frontend (production) ───────────────────────────────────────────────
+const distPath = path.join(__dirname, '../dist');
+app.use(express.static(distPath));
+app.get('*', (_, res) => res.sendFile(path.join(distPath, 'index.html')));
 
-  const hasActiveFilters = selectedSector || codeFilter;
+// ─── Helpers ───────────────────────────────────────────────────────────────────
+function extractTerms(orArray) {
+  const terms = new Set();
+  for (const cond of orArray) {
+    const val = Object.values(cond)[0];
+    if (val?.$regex) terms.add(val.$regex);
+  }
+  return [...terms];
+}
 
-  return (
-    <div
-      className={`min-h-screen transition-colors duration-300 ${darkMode ? "bg-gray-950" : "bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50"}`}
-      dir={isRTL ? "rtl" : "ltr"}
-    >
-      {/* Header */}
-      <header className={`sticky top-0 z-50 backdrop-blur-md border-b transition-colors ${darkMode ? "bg-gray-900/90 border-gray-800" : "bg-white/80 border-slate-200"}`}>
-        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-600 to-indigo-600 flex items-center justify-center">
-              <Search className="w-4 h-4 text-white" />
-            </div>
-            <span classN
+// ─── Start ─────────────────────────────────────────────────────────────────────
+initDB().then(() => {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server on port ${PORT}`));
+});
