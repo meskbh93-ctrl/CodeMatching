@@ -80,24 +80,18 @@ export default function SearchPage() {
   const [showFilters, setShowFilters] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
 
-  // Filter state
   const [selectedSector, setSelectedSector] = useState("");
   const [codeFilter, setCodeFilter] = useState("");
   const [allSectors, setAllSectors] = useState([]);
-
-  // All raw results before filtering
   const [rawMandatory, setRawMandatory] = useState([]);
 
   const t = translations[lang];
   const isRTL = lang === "ar";
 
-  // Load all sectors on mount for the filter sidebar
   useEffect(() => {
     base44.entities.MandatoryProduct.list("segment_title_ar", 5000).then((all) => {
       const sectors = [...new Set(
-        all
-          .map((p) => p.segment_title_ar || p.segment_title_en || p.sector || "")
-          .filter(Boolean)
+        all.map((p) => p.segment_title_ar || p.segment_title_en || p.sector || "").filter(Boolean)
       )].sort();
       setAllSectors(sectors);
     });
@@ -113,47 +107,72 @@ export default function SearchPage() {
     try {
       const q = query.trim().toLowerCase();
 
-      // Fetch all three in parallel - use filter with $or for mandatory to search properly
+      // ترجمة الكلمة للغة الأخرى قبل البحث
+      let translatedQ = "";
+      try {
+        const transRes = await fetch("/api/translate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: q }),
+        });
+        const transData = await transRes.json();
+        translatedQ = (transData.translated || "").toLowerCase().trim();
+      } catch (_) {
+        // إذا فشلت الترجمة نكمل بالكلمة الأصلية فقط
+      }
+
+      // بناء شروط البحث بالكلمتين (الأصلية والمترجمة)
+      const buildOr = (fields) => {
+        const terms = [q, translatedQ].filter(Boolean);
+        return fields.flatMap((field) =>
+          terms.map((term) => ({ [field]: { $regex: term, $options: "i" } }))
+        );
+      };
+
       const [allMandatory, unspscFiltered, hsFiltered] = await Promise.all([
         base44.entities.MandatoryProduct.filter(
           {
-            $or: [
-              { product_name_ar: { $regex: q, $options: "i" } },
-              { product_name_en: { $regex: q, $options: "i" } },
-              { product_desc_ar: { $regex: q, $options: "i" } },
-              { product_desc_en: { $regex: q, $options: "i" } },
-              { segment_title_ar: { $regex: q, $options: "i" } },
-              { segment_title_en: { $regex: q, $options: "i" } },
-              { etimad_code: { $regex: q, $options: "i" } },
-            ],
+            $or: buildOr([
+              "product_name_ar", "product_name_en",
+              "product_desc_ar", "product_desc_en",
+              "segment_title_ar", "segment_title_en",
+              "etimad_code",
+            ]),
           },
           "etimad_code",
           500
         ),
-        base44.entities.UNSPSCCode.filter({ title: { $regex: q, $options: "i" } }, "title", 100),
+        base44.entities.UNSPSCCode.filter(
+          translatedQ
+            ? { $or: [{ title: { $regex: q, $options: "i" } }, { title: { $regex: translatedQ, $options: "i" } }] }
+            : { title: { $regex: q, $options: "i" } },
+          "title",
+          100
+        ),
         base44.entities.HSCode.filter(
-          { $or: [{ name_ar: { $regex: q, $options: "i" } }, { name_en: { $regex: q, $options: "i" } }] },
+          { $or: buildOr(["name_ar", "name_en"]) },
           "code",
           100
         ),
       ]);
 
-      // Score each mandatory result for best match
       const scoreMandatory = (p) => {
         const nameAr = (p.product_name_ar || "").toLowerCase();
         const nameEn = (p.product_name_en || "").toLowerCase();
-        if (nameAr === q || nameEn === q) return 3;
-        if (nameAr.startsWith(q) || nameEn.startsWith(q)) return 2;
-        if (nameAr.includes(q) || nameEn.includes(q)) return 1;
+        const terms = [q, translatedQ].filter(Boolean);
+        for (const term of terms) {
+          if (nameAr === term || nameEn === term) return 3;
+          if (nameAr.startsWith(term) || nameEn.startsWith(term)) return 2;
+          if (nameAr.includes(term) || nameEn.includes(term)) return 1;
+        }
         return 0;
       };
 
       const mandatoryWithScore = allMandatory.map((p) => ({ ...p, _score: scoreMandatory(p) }));
       mandatoryWithScore.sort((a, b) => b._score - a._score);
-      const mandatoryFiltered = mandatoryWithScore;
 
       const seen = new Set();
-      const uniqueMandatory = mandatoryFiltered.filter((p) => {
+      const uniqueMandatory = mandatoryWithScore.filter((p) => {
         const key = p.etimad_code || p.id;
         if (seen.has(key)) return false;
         seen.add(key);
@@ -162,8 +181,6 @@ export default function SearchPage() {
 
       setRawMandatory(uniqueMandatory);
       setMandatoryResults(uniqueMandatory);
-      setSelectedSector("");
-      setCodeFilter("");
 
       const seenCodes = new Set();
       const uniqueUnspsc = unspscFiltered.filter((u) => {
@@ -183,7 +200,6 @@ export default function SearchPage() {
       setHsResults(uniqueHs);
       setShowHistory(false);
 
-      // Log the search
       base44.entities.SearchLog.create({
         query: query.trim(),
         mandatory_count: uniqueMandatory.length,
@@ -198,7 +214,6 @@ export default function SearchPage() {
     }
   }, [query]);
 
-  // Apply filters to mandatory results
   useEffect(() => {
     let filtered = rawMandatory;
     if (selectedSector) {
@@ -296,7 +311,6 @@ export default function SearchPage() {
           )}
         </div>
 
-        {/* Content Area */}
         {loading && (
           <div className="flex flex-col items-center justify-center py-20 gap-4">
             <Loader2 className={`w-10 h-10 animate-spin ${darkMode ? "text-blue-400" : "text-blue-600"}`} />
@@ -304,7 +318,6 @@ export default function SearchPage() {
           </div>
         )}
 
-        {/* Search History Panel */}
         {showHistory && !loading && (
           <div className="mb-6">
             <SearchHistory darkMode={darkMode} lang={lang} onSelect={(q) => { setQuery(q); setShowHistory(false); }} />
@@ -313,7 +326,6 @@ export default function SearchPage() {
 
         {!loading && searched && (
           <div className={`flex gap-6 ${isRTL ? "flex-row-reverse" : ""}`}>
-            {/* Sidebar Filter */}
             {showFilters && (
               <FilterSidebar
                 darkMode={darkMode}
@@ -329,9 +341,7 @@ export default function SearchPage() {
               />
             )}
 
-            {/* Results */}
             <div className="flex-1 min-w-0 space-y-10">
-              {/* Smart Comparison + Export bar */}
               <div className="flex flex-col gap-4">
                 <SmartComparison
                   query={query} mandatoryResults={mandatoryResults}
